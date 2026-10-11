@@ -1,0 +1,16 @@
+{
+  "name": "supabase-init-cli",
+  "version": "1.0.3",
+  "description": "CLI global pour gérer des instances Supabase locales avec Docker",
+  "bin": {
+    "supabase-init-cli": "bin/run"
+  },
+  "files": [
+    "bin",
+    "lib"
+  ],
+  "preferGlobal": true,
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

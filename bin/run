@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Trouve le vrai chemin du script même s'il est lié via un symlink npm global
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+LIB_DIR="${SCRIPT_DIR}/../lib"
+TARGET_DIR="$(pwd)"
+
+subcommand="${1:-}"
+shift || true
+
+case "$subcommand" in
+  init)
+    bash "${LIB_DIR}/init-supabase.sh" "$@"
+    ;;
+  down)
+    if [[ -f "${TARGET_DIR}/docker-compose.yml" ]]; then
+      echo "Arrêt des services Supabase locaux..."
+      docker compose down
+    else
+      echo "Aucun fichier docker-compose.yml trouvé dans ce dossier."
+      exit 1
+    fi
+    ;;
+  logs)
+    if [[ -f "${TARGET_DIR}/docker-compose.yml" ]]; then
+      docker compose logs -f
+    else
+      echo "Aucun fichier docker-compose.yml trouvé dans ce dossier."
+      exit 1
+    fi
+    ;;
+  -h|--help|help)
+    echo "Usage: sup <command> [options]"
+    echo "Commandes: init, down, logs"
+    exit 0
+    ;;
+  *)
+    echo "Commande inconnue: $subcommand"
+    exit 1
+    ;;
+esac
