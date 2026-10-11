@@ -1,13 +1,35 @@
 {
-  "name": "supabase-init-cli",
-  "version": "1.0.3",
-  "description": "CLI global pour gérer des instances Supabase locales avec Docker",
+  "name": "supabase-setup-cli",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "description": "Easily initialize and manage local Supabase stacks powered by Docker. Global-friendly CLI.",
+  "keywords": [
+    "supabase",
+    "cli",
+    "docker",
+    "local",
+    "postgres",
+    "storage",
+    "kong",
+    "init",
+    "scaffold"
+  ],
+  "author": "YOUR_NAME <your.email@example.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/MOUAFORandoll/supabase-setup-cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MOUAFORandoll/supabase-setup-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MOUAFORandoll/supabase-setup-cli/issues"
+  },
   "bin": {
-    "supabase-init-cli": "bin/run"
+    "supabase-setup-cli": "./bin/run"
   },
   "files": [
-    "bin",
-    "lib"
+    "bin/",
+    "lib/"
   ],
   "preferGlobal": true,
   "engines": {

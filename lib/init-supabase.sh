@@ -5,7 +5,7 @@ set -euo pipefail
 BASE_DIR="$(pwd)"
 
 usage() {
-  echo "Usage: supabase-init-cli --name <name> --port <port> --storage-port <port> [--kong-port <port>] [--no-start]"
+  echo "Usage: supabase-setup-cli --name <name> --port <port> --storage-port <port> [--kong-port <port>] [--no-start]"
   echo ""
   echo "Options:"
   echo "  --name         Project name (creates a directory with this name and initializes files inside)"

@@ -1,8 +1,8 @@
-# supabase-init-cli
+# supabase-setup-cli
 
 > Easily initialize and run a local Supabase stack powered by Docker.
 
-[![npm version](https://img.shields.io/npm/v/supabase-init-cli.svg)](https://www.npmjs.com/package/supabase-init-cli)
+[![npm version](https://img.shields.io/npm/v/supabase-setup-cli.svg)](https://www.npmjs.com/package/supabase-setup-cli)
 
 ## Overview
 
@@ -16,7 +16,7 @@
 ## Installation
 
 ```sh
-npm install -g supabase-init-cli
+npm install -g supabase-setup-cli
 ```
 
 ## CLI Usage
@@ -24,27 +24,27 @@ npm install -g supabase-init-cli
 You can use this CLI from anywhere:
 
 ```sh
-supabase-init-cli --name <project_name> --port <postgres_port> --storage-port <storage_port> [--kong-port <kong_port>] [--no-start]
+supabase-setup-cli --name <project_name> --port <postgres_port> --storage-port <storage_port> [--kong-port <kong_port>] [--no-start]
 ```
 
 ### Parameters
 
-| Option            | Description                                                                                | Example           |
-|-------------------|--------------------------------------------------------------------------------------------|-------------------|
-| `--name`          | Project name (creates a folder, all files inside)                                          | `myapp`           |
-| `--port`          | Exposed port for PostgreSQL                                                                | `15432`           |
-| `--storage-port`  | Exposed port for the Storage API                                                           | `5040`            |
-| `--kong-port`     | (Optional) Exposed port for Kong (default: `3030`)                                         | `5555`            |
-| `--no-start`      | (Optional) Only generate files, *do not* start containers                                  |                   |
+| Option           | Description                                               | Example |
+| ---------------- | --------------------------------------------------------- | ------- |
+| `--name`         | Project name (creates a folder, all files inside)         | `myapp` |
+| `--port`         | Exposed port for PostgreSQL                               | `15432` |
+| `--storage-port` | Exposed port for the Storage API                          | `5040`  |
+| `--kong-port`    | (Optional) Exposed port for Kong (default: `3030`)        | `5555`  |
+| `--no-start`     | (Optional) Only generate files, _do not_ start containers |         |
 
 ### Example
 
 ```sh
 # Generate and launch containers for Postgres (on 15432), Storage API (5040), Kong (3030)
-supabase-init-cli --name myapp --port 15432 --storage-port 5040
+supabase-setup-cli --name myapp --port 15432 --storage-port 5040
 
 # Generate a custom Kong port and skip container launch (just generate files)
-supabase-init-cli --name myapp --port 15432 --storage-port 5040 --kong-port 5555 --no-start
+supabase-setup-cli --name myapp --port 15432 --storage-port 5040 --kong-port 5555 --no-start
 ```
 
 ## Project Layout
@@ -55,7 +55,7 @@ A new directory `<name>` is created with:
 - `.env` — Secure, auto-generated credentials & JWTs
 - `kong/` — Kong declarative config
 - `migrations/init/` — Place your SQL migrations here
-    - `01_custom_schema.sql` — Example custom schema file
+  - `01_custom_schema.sql` — Example custom schema file
 
 ## After Initialization
 
@@ -84,8 +84,8 @@ docker compose logs -f
 Or use the CLI wrappers:
 
 ```sh
-supabase-init-cli down     # Stop & remove all containers
-supabase-init-cli logs     # Follow container logs
+supabase-setup-cli down     # Stop & remove all containers
+supabase-setup-cli logs     # Follow container logs
 ```
 
 ## Migrations
@@ -117,5 +117,5 @@ You may also call the storage API directly at `http://localhost:<storage-port>/b
 ## Security Advice
 
 - Keep `.env` secure and never commit secrets.
-- In production, review and set more restrictive credentials as needed.  
+- In production, review and set more restrictive credentials as needed.
 - See [Supabase self-hosting documentation](https://supabase.com/docs/guides/self-hosting/docker) for full security/configuration guidelines.
