@@ -18,7 +18,8 @@ shift || true
 
 case "$subcommand" in
   init)
-    bash "${LIB_DIR}/init-supabase.sh" "$@"
+    # Important : on passe bien "$@" pour transmettre name=, port=, etc.
+    exec bash "${LIB_DIR}/init-supabase.sh" init "$@"
     ;;
   down)
     if [[ -f "${TARGET_DIR}/docker-compose.yml" ]]; then
@@ -38,12 +39,17 @@ case "$subcommand" in
     fi
     ;;
   -h|--help|help)
-    echo "Usage: sup <command> [options]"
-    echo "Commandes: init, down, logs"
+    echo "Usage: supabase-setup-cli <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  init                   Initialize a new Supabase project"
+    echo "  down                   Stop local Supabase services"
+    echo "  logs                   View container logs"
     exit 0
     ;;
   *)
-    echo "Commande inconnue: $subcommand"
+    echo "Unknown or missing command: $subcommand"
+    echo "Usage: supabase-setup-cli init name=<name> port=<port> storage-port=<port>"
     exit 1
     ;;
 esac
