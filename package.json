@@ -1,6 +1,6 @@
 {
   "name": "supabase-setup-cli",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "type": "commonjs",
   "description": "Easily initialize and manage local Supabase stacks powered by Docker. Global-friendly CLI.",
   "keywords": [
