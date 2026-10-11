@@ -5,14 +5,14 @@ set -euo pipefail
 BASE_DIR="$(pwd)"
 
 usage() {
-  echo "Usage: supabase-setup-cli --name <name> --port <port> --storage-port <port> [--kong-port <port>] [--no-start]"
+  echo "Usage: supabase-setup-cli name=<name> port=<port> storage-port=<port> [kong-port=<port>] [no-start]"
   echo ""
   echo "Options:"
-  echo "  --name         Project name (creates a directory with this name and initializes files inside)"
-  echo "  --port         Exposed port for PostgreSQL (e.g., 5432)"
-  echo "  --storage-port Exposed port for the Storage API (e.g., 5000)"
-  echo "  --kong-port    Exposed port for Kong (e.g., 3030)"
-  echo "  --no-start     Only generate the docker-compose file without starting containers"
+  echo "  name=<name>           Project name (creates a directory with this name and initializes files inside)"
+  echo "  port=<port>           Exposed port for PostgreSQL (e.g., 5432)"
+  echo "  storage-port=<port>   Exposed port for the Storage API (e.g., 5000)"
+  echo "  kong-port=<port>      Exposed port for Kong (e.g., 3030)"
+  echo "  no-start              Only generate the docker-compose file without starting containers"
   exit 1
 }
 
@@ -34,7 +34,7 @@ check_docker_dependencies() {
     read -rp "Do you want to continue anyway (will generate files without starting services)? (y/N) " response
     case "$response" in
       [yY][eE][sS]|[yY])
-        echo "Continuing file generation (option --no-start is implicitly enabled)..."
+        echo "Continuing file generation (option no-start is implicitly enabled)..."
         NO_START=true
         ;;
       *)
@@ -51,20 +51,36 @@ STORAGE_PORT=""
 KONG_PORT="3030"
 NO_START=false
 
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --name) NAME="$2"; shift 2 ;;
-    --port) PORT="$2"; shift 2 ;;
-    --storage-port) STORAGE_PORT="$2"; shift 2 ;;
-    --kong-port) KONG_PORT="$2"; shift 2 ;;
-    --no-start) NO_START=true; shift ;;
-    -h|--help) usage ;;
-    *) echo "Unknown option: $1"; usage ;;
+# Parse arguments in format key=value and flags
+for arg in "$@"; do
+  case $arg in
+    name=*)
+      NAME="${arg#name=}"
+      ;;
+    port=*)
+      PORT="${arg#port=}"
+      ;;
+    storage-port=*)
+      STORAGE_PORT="${arg#storage-port=}"
+      ;;
+    kong-port=*)
+      KONG_PORT="${arg#kong-port=}"
+      ;;
+    no-start)
+      NO_START=true
+      ;;
+    -h|--help|help)
+      usage
+      ;;
+    *)
+      echo "Unknown option or command: $arg"
+      usage
+      ;;
   esac
 done
 
 if [[ -z "$NAME" ]] || [[ -z "$PORT" ]] || [[ -z "$STORAGE_PORT" ]]; then
-  echo "Error: --name, --port, and --storage-port are required."
+  echo "Error: name=, port=, and storage-port= are required."
   usage
 fi
 
