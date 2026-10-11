@@ -29,13 +29,13 @@ supabase-setup-cli init name=<project_name> port=<postgres_port> storage-port=<s
 
 ### Parameters
 
-| Option           | Description                                                                | Example  |
-|------------------|----------------------------------------------------------------------------|----------|
-| `name`           | Project name (creates a folder with all generated configs inside)          | `myapp`  |
-| `port`           | Exposed port for PostgreSQL                                                | `5432`   |
-| `storage-port`   | Exposed port for the Storage API                                           | `5000`   |
-| `kong-port`      | (Optional) Exposed port for Kong (default: `3030`)                         | `5555`   |
-| `no-start`       | (Optional) Generates files _without_ starting containers                   |          |
+| Option         | Description                                                       | Example |
+| -------------- | ----------------------------------------------------------------- | ------- |
+| `name`         | Project name (creates a folder with all generated configs inside) | `myapp` |
+| `port`         | Exposed port for PostgreSQL                                       | `5432`  |
+| `storage-port` | Exposed port for the Storage API                                  | `5000`  |
+| `kong-port`    | (Optional) Exposed port for Kong (default: `3030`)                | `5555`  |
+| `no-start`     | (Optional) Generates files _without_ starting containers          |         |
 
 ### Examples
 
@@ -84,9 +84,18 @@ docker compose logs -f
 You can also use CLI shortcuts:
 
 ```sh
-supabase-setup-cli down     # Stops and removes all project containers
-supabase-setup-cli logs     # Streams real-time container logs
+# From within the project directory:
+supabase-setup-cli down        # Stop and remove all project containers
+supabase-setup-cli logs        # Stream real-time container logs
+
+# From anywhere, target a specific project by name:
+supabase-setup-cli down myapp  # Stop and remove containers for "myapp"
+supabase-setup-cli logs myapp  # Stream logs for "myapp"
 ```
+
+# End of Selection
+
+````
 
 ## Migrations
 
@@ -110,7 +119,7 @@ curl -X POST "http://localhost:<kong-port>/storage/v1/bucket" \
   -H "Authorization: Bearer ${SERVICE_KEY}" \
   -H "Content-Type: application/json" \
   -d '{"name": "avatars", "public": true, "allowedMimeTypes": ["image/*"], "fileSizeLimit": "1048576"}'
-```
+````
 
 You can also call the Storage API directly at: `http://localhost:<storage-port>/bucket`.
 

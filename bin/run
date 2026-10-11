@@ -18,23 +18,37 @@ shift || true
 
 case "$subcommand" in
   init)
-    # Important : on passe bien "$@" pour transmettre name=, port=, etc.
     exec bash "${LIB_DIR}/init-supabase.sh" init "$@"
     ;;
   down)
-    if [[ -f "${TARGET_DIR}/docker-compose.yml" ]]; then
-      echo "Arrêt des services Supabase locaux..."
-      docker compose down
+    PROJECT_NAME="${1:-}"
+    if [[ -n "$PROJECT_NAME" ]]; then
+      echo "Arrêt et nettoyage des conteneurs pour le projet : ${PROJECT_NAME}..."
+      docker compose -p "${PROJECT_NAME}" down --volumes --remove-orphans 2>/dev/null || \
+      docker-compose -p "${PROJECT_NAME}" down --volumes --remove-orphans 2>/dev/null || true
+    elif [[ -f "${TARGET_DIR}/docker-compose.yml" ]]; then
+      echo "Arrêt des services Supabase locaux dans le dossier courant..."
+      docker compose down --volumes --remove-orphans 2>/dev/null || \
+      docker-compose down --volumes --remove-orphans 2>/dev/null || true
     else
-      echo "Aucun fichier docker-compose.yml trouvé dans ce dossier."
+      echo "Erreur : Aucun fichier docker-compose.yml trouvé et aucun nom de projet spécifié."
       exit 1
     fi
     ;;
   logs)
-    if [[ -f "${TARGET_DIR}/docker-compose.yml" ]]; then
-      docker compose logs -f
+    PROJECT_NAME="${1:-}"
+    if [[ -n "$PROJECT_NAME" ]]; then
+      echo "Affichage des logs pour le projet : ${PROJECT_NAME}..."
+      docker compose -p "${PROJECT_NAME}" logs -f 2>/dev/null || \
+      docker-compose -p "${PROJECT_NAME}" logs -f 2>/dev/null || \
+      echo "Erreur : Impossible de récupérer les logs pour le projet ${PROJECT_NAME}."
+    elif [[ -f "${TARGET_DIR}/docker-compose.yml" ]]; then
+      echo "Affichage des logs du projet dans le dossier courant..."
+      docker compose logs -f 2>/dev/null || \
+      docker-compose logs -f
     else
-      echo "Aucun fichier docker-compose.yml trouvé dans ce dossier."
+      echo "Erreur : Aucun fichier docker-compose.yml trouvé dans ce dossier et aucun nom de projet spécifié."
+      echo "Usage: supabase-setup-cli logs [project-name]"
       exit 1
     fi
     ;;
@@ -42,9 +56,9 @@ case "$subcommand" in
     echo "Usage: supabase-setup-cli <command> [options]"
     echo ""
     echo "Commands:"
-    echo "  init                   Initialize a new Supabase project"
-    echo "  down                   Stop local Supabase services"
-    echo "  logs                   View container logs"
+    echo "  init name=<name> port=<port> storage-port=<port>  Initialize a new Supabase project"
+    echo "  down [project-name]                               Stop local Supabase services & remove containers"
+    echo "  logs [project-name]                               View container logs in real time"
     exit 0
     ;;
   *)
