@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Le dossier de base où l'utilisateur exécute la commande
+# The base directory where the user runs the command
 BASE_DIR="$(pwd)"
 
 usage() {
   echo "Usage: supabase-init-cli --name <name> --port <port> --storage-port <port> [--kong-port <port>] [--no-start]"
   echo ""
   echo "Options:"
-  echo "  --name         Nom du projet (crée un dossier du même nom et initialise les fichiers dedans)"
-  echo "  --port         Port exposé pour PostgreSQL (ex: 5432)"
-  echo "  --storage-port Port exposé pour l'API Storage (ex: 5000)"
-  echo "  --kong-port    Port exposé pour Kong (ex: 3030)"
-  echo "  --no-start     Génère uniquement le docker-compose sans lancer les containers"
+  echo "  --name         Project name (creates a directory with this name and initializes files inside)"
+  echo "  --port         Exposed port for PostgreSQL (e.g., 5432)"
+  echo "  --storage-port Exposed port for the Storage API (e.g., 5000)"
+  echo "  --kong-port    Exposed port for Kong (e.g., 3030)"
+  echo "  --no-start     Only generate the docker-compose file without starting containers"
   exit 1
 }
 
-# --- ÉTAPE : Vérification de Docker & Docker Compose ---
+# --- STEP: Check Docker & Docker Compose dependencies ---
 check_docker_dependencies() {
   local missing=false
 
@@ -29,16 +29,16 @@ check_docker_dependencies() {
   fi
 
   if [[ "$missing" == true ]]; then
-    echo "⚠️  Attention : Docker ou Docker Compose ne semble pas être installé sur votre système."
+    echo "⚠️  Warning: Docker or Docker Compose does not appear to be installed on your system."
     echo ""
-    read -rp "Voulez-vous continuer quand même (génération des fichiers sans démarrage) ? (y/N) " response
+    read -rp "Do you want to continue anyway (will generate files without starting services)? (y/N) " response
     case "$response" in
       [yY][eE][sS]|[yY])
-        echo "Poursuite de la génération des fichiers (option --no-start activée implicitement)..."
+        echo "Continuing file generation (option --no-start is implicitly enabled)..."
         NO_START=true
         ;;
       *)
-        echo "Abandon. Veuillez installer Docker et Docker Compose pour lancer Supabase."
+        echo "Aborted. Please install Docker and Docker Compose to launch Supabase."
         exit 1
         ;;
     esac
@@ -59,24 +59,24 @@ while [[ $# -gt 0 ]]; do
     --kong-port) KONG_PORT="$2"; shift 2 ;;
     --no-start) NO_START=true; shift ;;
     -h|--help) usage ;;
-    *) echo "Option inconnue: $1"; usage ;;
+    *) echo "Unknown option: $1"; usage ;;
   esac
 done
 
 if [[ -z "$NAME" ]] || [[ -z "$PORT" ]] || [[ -z "$STORAGE_PORT" ]]; then
-  echo "Erreur: --name, --port et --storage-port sont requis."
+  echo "Error: --name, --port, and --storage-port are required."
   usage
 fi
 
 check_docker_dependencies
 
 if ! [[ "$NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-  echo "Erreur: le nom doit contenir uniquement lettres, chiffres, tirets et underscores."
+  echo "Error: Project name must contain only letters, numbers, dashes, and underscores."
   exit 1
 fi
 
 PROJECT_DIR="${BASE_DIR}/${NAME}"
-echo "Création du dossier du projet : ${PROJECT_DIR}"
+echo "Creating project directory: ${PROJECT_DIR}"
 mkdir -p "${PROJECT_DIR}"
 cd "${PROJECT_DIR}"
 
@@ -135,10 +135,10 @@ ANON_KEY=${anon_key}
 SERVICE_KEY=${service_key}
 ADMIN_PASSWORD=${admin_pwd}
 ENVEOF
-  echo "Secrets générés et écrits dans: ${ENV_FILE}"
+  echo "Secrets generated and written to: ${ENV_FILE}"
 }
 
-# Nettoyage des anciens conteneurs liés au projet
+# Remove any previous containers related to this project
 if [[ -f "${COMPOSE_FILE}" ]]; then
   docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
   docker rm -f "${STORAGE_CONTAINER}" >/dev/null 2>&1 || true
@@ -228,7 +228,7 @@ EOF
 
 mkdir -p "${TARGET_DIR}/migrations/init"
 
-# Génération des secrets dynamiques uniques à chaque exécution
+# Generate unique dynamic secrets for each run
 generate_jwt_env
 
 generate_kong_config
@@ -240,12 +240,12 @@ SQLEOF
 fi
 
 generate_compose > "${COMPOSE_FILE}"
-echo "Fichier écrit: ${COMPOSE_FILE}"
+echo "docker-compose file written: ${COMPOSE_FILE}"
 
 if [[ "$NO_START" == true ]]; then
-  echo "Mode sans démarrage activé. Fichiers générés dans ${PROJECT_DIR}."
+  echo "No-start mode enabled. Files generated in ${PROJECT_DIR}."
   echo ""
-  echo "Voici vos clés dynamiques générées pour ce projet :"
+  echo "Here are your generated dynamic keys for this project:"
   echo "  PGRST_JWT_SECRET : $PGRST_JWT_SECRET_VALUE"
   echo "  ANON_KEY         : $ANON_KEY_VALUE"
   echo "  SERVICE_KEY      : $SERVICE_KEY_VALUE"
@@ -253,10 +253,10 @@ if [[ "$NO_START" == true ]]; then
   exit 0
 fi
 
-echo "Démarrage de PostgreSQL..."
+echo "Starting PostgreSQL..."
 docker compose -p "${NAME}" -f "${COMPOSE_FILE}" up -d --remove-orphans "${SERVICE_DB}"
 
-echo "Attente du démarrage de PostgreSQL..."
+echo "Waiting for PostgreSQL to be ready..."
 for i in {1..30}; do
   if docker exec "${CONTAINER_NAME}" pg_isready -U postgres -q 2>/dev/null; then
     break
@@ -271,16 +271,16 @@ if [[ -d "${TARGET_DIR}/migrations/init" ]]; then
   done
 fi
 
-echo "Démarrage complet des services..."
+echo "Starting all services..."
 docker compose -p "${NAME}" -f "${COMPOSE_FILE}" up -d --remove-orphans
 
 echo ""
-echo "Supabase initialisé avec succès dans le dossier : ${PROJECT_DIR}"
+echo "Supabase successfully initialized in directory: ${PROJECT_DIR}"
 echo "  Postgres       : localhost:${PORT}"
 echo "  Storage        : http://localhost:${STORAGE_PORT}"
 echo "  Kong           : http://localhost:${KONG_PORT}"
 echo ""
-echo "Voici vos clés dynamiques générées pour ce projet :"
+echo "Here are your generated dynamic keys for this project:"
 echo "  PGRST_JWT_SECRET : $PGRST_JWT_SECRET_VALUE"
 echo "  ANON_KEY         : $ANON_KEY_VALUE"
 echo "  SERVICE_KEY      : $SERVICE_KEY_VALUE"

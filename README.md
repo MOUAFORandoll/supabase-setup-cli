@@ -1,97 +1,121 @@
-# Supabase Setup (Docker)
+# supabase-init-cli
 
-Initialisation de Supabase en local avec Docker : un script génère le `docker-compose` et démarre les containers au format `{name}_superbase`.
+> Easily initialize and run a local Supabase stack powered by Docker.
 
-## Prérequis
+[![npm version](https://img.shields.io/npm/v/supabase-init-cli.svg)](https://www.npmjs.com/package/supabase-init-cli)
 
-- Docker et Docker Compose
-- Bash
+## Overview
 
-## Usage
+`s‍upabase-init-cli` is a global CLI that scaffolds and launches a local Supabase instance (PostgreSQL, Storage API, Kong HTTP proxy) using Docker Compose. It generates all config/env/secrets needed and supports per-project setup.
 
-```bash
-./init-supabase.sh --name <nom_projet> --port <port_postgres> --storage-port <port_storage> --kong-port <port_kong>
+## Prerequisites
+
+- [Docker](https://www.docker.com/get-started) & Docker Compose
+- Bash (Linux/macOS/WSL; not supported on Windows native shells)
+
+## Installation
+
+```sh
+npm install -g supabase-init-cli
 ```
 
-**Exemples :**
+## CLI Usage
 
-```bash
-# Crée le container "monapp_superbase", Postgres sur 15432, Storage sur 5040
-./init-supabase.sh --name monapp --port 15432 --storage-port 5040
+You can use this CLI from anywhere:
 
-# (Optionnel) Kong sur un port différent
-./init-supabase.sh --name monapp --port 15432 --storage-port 5040 --kong-port 3030
-
-# Générer uniquement le docker-compose sans démarrer
-./init-supabase.sh --name monapp --port 15432 --storage-port 5040 --no-start
+```sh
+supabase-init-cli --name <project_name> --port <postgres_port> --storage-port <storage_port> [--kong-port <kong_port>] [--no-start]
 ```
 
-- **`--name`** : nom du projet. Le container Postgres sera nommé `{name}_superbase`.
-- **`--port`** : port exposé pour PostgreSQL (ex. 15432).
-- **`--storage-port`** : port exposé pour l’API Storage (ex. 5040).
-- **`--kong-port`** : port exposé pour Kong (ex. 3030).
+### Parameters
 
-## Après initialisation
+| Option            | Description                                                                                | Example           |
+|-------------------|--------------------------------------------------------------------------------------------|-------------------|
+| `--name`          | Project name (creates a folder, all files inside)                                          | `myapp`           |
+| `--port`          | Exposed port for PostgreSQL                                                                | `15432`           |
+| `--storage-port`  | Exposed port for the Storage API                                                           | `5040`            |
+| `--kong-port`     | (Optional) Exposed port for Kong (default: `3030`)                                         | `5555`            |
+| `--no-start`      | (Optional) Only generate files, *do not* start containers                                  |                   |
 
-- **PostgreSQL** : `localhost:<port>` (user: `postgres`, password: `postgres`, db: `postgres`)
-- **Connection string** : `postgres://postgres:postgres@localhost:<port>/postgres`
-- **Storage API (direct)** : `http://localhost:<storage-port>`
-- **Storage API (via Kong)** : `http://localhost:<kong-port>/storage/v1`
-- **SERVICE_KEY** : affiché à la fin du script (également présent dans `.env`)
+### Example
 
-L’image `supabase/postgres` applique au premier démarrage le schéma par défaut Supabase (extensions, rôles `anon`/`authenticated`/`service_role`, etc.).
+```sh
+# Generate and launch containers for Postgres (on 15432), Storage API (5040), Kong (3030)
+supabase-init-cli --name myapp --port 15432 --storage-port 5040
 
-## Tables et migrations personnalisées
+# Generate a custom Kong port and skip container launch (just generate files)
+supabase-init-cli --name myapp --port 15432 --storage-port 5040 --kong-port 5555 --no-start
+```
 
-Les fichiers SQL dans `migrations/init/*.sql` sont exécutés après le démarrage de la base (ordre alphabétique). Vous pouvez y définir vos tables métier.
+## Project Layout
 
-Exemple : éditer `migrations/init/01_custom_schema.sql`.
+A new directory `<name>` is created with:
 
-## Commandes utiles
+- `docker-compose.yml` — Compose config for DB, Storage, Kong
+- `.env` — Secure, auto-generated credentials & JWTs
+- `kong/` — Kong declarative config
+- `migrations/init/` — Place your SQL migrations here
+    - `01_custom_schema.sql` — Example custom schema file
 
-```bash
-# Démarrer (si déjà généré)
+## After Initialization
+
+- **PostgreSQL**: `localhost:<port>` (`postgres`/`<admin password generated>`, db: `postgres`)
+- **Connection string**: `postgres://postgres:<password>@localhost:<port>/postgres`
+- **Storage API (direct)**: `http://localhost:<storage-port>`
+- **Storage API (via Kong)**: `http://localhost:<kong-port>/storage/v1`
+- **SERVICE_KEY**: Shown at end of script & written to `.env`
+- **JWT Secrets**: `PGRST_JWT_SECRET`, `ANON_KEY`, and `SERVICE_KEY` are generated per project and stored in `.env`.
+
+## Running & Managing
+
+In your project folder:
+
+```sh
+# Start containers (if not already running)
 docker compose up -d
 
-# Arrêter
+# Stop containers
 docker compose down
 
-# Logs
+# View logs
 docker compose logs -f
 ```
 
-## Secrets JWT
+Or use the CLI wrappers:
 
-Lors du premier lancement, le script **génère automatiquement** un fichier `.env` avec :
+```sh
+supabase-init-cli down     # Stop & remove all containers
+supabase-init-cli logs     # Follow container logs
+```
 
-- **PGRST_JWT_SECRET** : secret aléatoire (openssl)
-- **ANON_KEY** : JWT pour le rôle `anon`
-- **SERVICE_KEY** : JWT pour le rôle `service_role`
+## Migrations
 
-Le `.env` est créé uniquement s’il n’existe pas. Pour régénérer les secrets, supprimez `.env` puis relancez le script. **Ne commitez pas le fichier `.env`** (il est ignoré par le `.gitignore` si vous ne versionnez que le script et le README).
+All SQL files in `migrations/init/*.sql` are executed (alphabetically) after the database starts.  
+You can edit `migrations/init/01_custom_schema.sql` or add additional `.sql` files for your schema/tables/etc.
 
-## Exemple : créer un bucket Storage
+## Environment & Secrets
 
-Avec Kong, l’API Storage est accessible via `http://localhost:<kong-port>/storage/v1`.
+- The script creates `.env` if missing, containing all necessary secrets and JWT keys.
+- To regenerate secrets: delete `.env` and rerun the CLI.
+- **Do not commit `.env` to version control.** (Add to `.gitignore` by default.)
 
-Exemple pour créer un bucket `avatars` public :
+## Example: Create a Storage Bucket
 
-```bash
-SERVICE_KEY="<la_valeur_affichée_par_le_script>"
+Use the generated `SERVICE_KEY` to create a public storage bucket through Kong:
+
+```sh
+SERVICE_KEY="<value printed at initialization>"
 
 curl -X POST "http://localhost:<kong-port>/storage/v1/bucket" \
   -H "Authorization: Bearer ${SERVICE_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{
-    "name": "avatars",
-    "public": true,
-    "allowedMimeTypes": ["image/*"],
-    "fileSizeLimit": "1048576"
-  }'
+  -d '{"name": "avatars", "public": true, "allowedMimeTypes": ["image/*"], "fileSizeLimit": "1048576"}'
 ```
 
-Vous pouvez aussi appeler directement `http://localhost:<storage-port>/bucket`, mais le plus simple est d’utiliser Kong.
+You may also call the storage API directly at `http://localhost:<storage-port>/bucket`.
 
-## Sécurité
+## Security Advice
 
-En production, vérifiez les secrets dans `.env` et définissez aussi `POSTGRES_PASSWORD` si besoin. Voir la [doc Supabase self-hosting](https://supabase.com/docs/guides/self-hosting/docker).
+- Keep `.env` secure and never commit secrets.
+- In production, review and set more restrictive credentials as needed.  
+- See [Supabase self-hosting documentation](https://supabase.com/docs/guides/self-hosting/docker) for full security/configuration guidelines.
