@@ -138,14 +138,18 @@ if [[ "$SUBCOMMAND" == "init" ]]; then
   jwt_sign() {
     local payload="$1"
     local secret="$2"
-    local header='{"alg":"HS256","typ":"JWT"}'
-    base64_url() { base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='; }
-    local header_b64 payload_b64 msg sig
-    header_b64=$(echo -n "$header" | base64_url)
-    payload_b64=$(echo -n "$payload" | base64_url)
-    msg="${header_b64}.${payload_b64}"
-    sig=$(echo -n "$msg" | openssl dgst -sha256 -hmac "$secret" -binary | base64_url)
-    echo "${msg}.${sig}"
+    node -e '
+      const crypto = require("crypto");
+      const encode = value => Buffer.from(value).toString("base64")
+        .replace(/=/g, "").split("+").join("-").split("/").join("_");
+      const header = encode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+      const payload = encode(process.argv[1]);
+      const unsigned = `${header}.${payload}`;
+      const signature = crypto.createHmac("sha256", process.argv[2])
+        .update(unsigned)
+        .digest("base64").replace(/=/g, "").split("+").join("-").split("/").join("_");
+      process.stdout.write(`${unsigned}.${signature}`);
+    ' "$payload" "$secret"
   }
 
   PGRST_JWT_SECRET_VALUE=""
@@ -158,7 +162,7 @@ if [[ "$SUBCOMMAND" == "init" ]]; then
   # existing volume before switching both database roles to the fixed value.
   for legacy_env in "${BASE_DIR}/.env" "${BASE_DIR}/${NAME}/.env" "${ENV_FILE}"; do
     if [[ -f "${legacy_env}" ]]; then
-      LEGACY_ADMIN_PASSWORD_VALUE="$(sed -n 's/^ADMIN_PASSWORD=//p' "${legacy_env}" | head -n 1)"
+      LEGACY_ADMIN_PASSWORD_VALUE="$(tr -d '\r' < "${legacy_env}" | sed -n 's/^ADMIN_PASSWORD=//p' | head -n 1)"
       if [[ -n "${LEGACY_ADMIN_PASSWORD_VALUE}" && "${LEGACY_ADMIN_PASSWORD_VALUE}" != "${ADMIN_PASSWORD_VALUE}" ]]; then
         break
       fi
@@ -174,8 +178,11 @@ if [[ "$SUBCOMMAND" == "init" ]]; then
     # Keep the project's signing secret and anon key stable. The service key
     # is intentionally rotated on each init; the database password is fixed.
     if [[ -f "${ENV_FILE}" ]]; then
-      PGRST_JWT_SECRET_VALUE="$(sed -n 's/^PGRST_JWT_SECRET=//p' "${ENV_FILE}" | head -n 1)"
-      ANON_KEY_VALUE="$(sed -n 's/^ANON_KEY=//p' "${ENV_FILE}" | head -n 1)"
+      # Strip CR characters from copied/Windows-formatted dotenv files before
+      # signing. Otherwise a trailing CR can be included in the HMAC input
+      # even though Compose removes it when loading the environment value.
+      PGRST_JWT_SECRET_VALUE="$(tr -d '\r' < "${ENV_FILE}" | sed -n 's/^PGRST_JWT_SECRET=//p' | head -n 1)"
+      ANON_KEY_VALUE="$(tr -d '\r' < "${ENV_FILE}" | sed -n 's/^ANON_KEY=//p' | head -n 1)"
     fi
 
     local exp="2147483646"
@@ -189,6 +196,21 @@ if [[ "$SUBCOMMAND" == "init" ]]; then
     service_jti="$(openssl rand -hex 16)"
     service_payload="{\"iss\":\"supabase\",\"role\":\"service_role\",\"exp\":${exp},\"jti\":\"${service_jti}\"}"
     SERVICE_KEY_VALUE="$(jwt_sign "$service_payload" "$PGRST_JWT_SECRET_VALUE")"
+
+    if ! node -e '
+      const crypto = require("crypto");
+      const token = process.argv[1];
+      const secret = process.argv[2];
+      const parts = token.split(".");
+      if (parts.length !== 3) process.exit(1);
+      const expected = crypto.createHmac("sha256", secret)
+        .update(`${parts[0]}.${parts[1]}`)
+        .digest("base64").replace(/=/g, "").split("+").join("-").split("/").join("_");
+      process.exit(expected === parts[2] ? 0 : 1);
+    ' "$SERVICE_KEY_VALUE" "$PGRST_JWT_SECRET_VALUE"; then
+      echo "Error: generated SERVICE_KEY does not verify with PGRST_JWT_SECRET." >&2
+      exit 1
+    fi
 
     cat > "${ENV_FILE}" <<ENVEOF
 PGRST_JWT_SECRET=${PGRST_JWT_SECRET_VALUE}
@@ -253,6 +275,9 @@ services:
       ${SERVICE_DB}:
         condition: service_healthy
     environment:
+      # Current Storage releases prefer AUTH_JWT_SECRET and retain
+      # PGRST_JWT_SECRET as a compatibility alias; keep both identical.
+      AUTH_JWT_SECRET: \${PGRST_JWT_SECRET}
       PGRST_JWT_SECRET: \${PGRST_JWT_SECRET}
       ANON_KEY: \${ANON_KEY}
       SERVICE_KEY: \${SERVICE_KEY}
@@ -297,6 +322,13 @@ EOF
   # this explicitly so every interpolated password comes from our validated
   # project credential, even if the invoking shell had a stale value.
   export ADMIN_PASSWORD="${ADMIN_PASSWORD_VALUE}"
+  # Compose gives exported shell variables precedence over values in .env.
+  # Export the exact values used to sign the API keys so a stale shell value
+  # cannot make Storage verify SERVICE_KEY with a different JWT secret.
+  export PGRST_JWT_SECRET="${PGRST_JWT_SECRET_VALUE}"
+  export AUTH_JWT_SECRET="${PGRST_JWT_SECRET_VALUE}"
+  export ANON_KEY="${ANON_KEY_VALUE}"
+  export SERVICE_KEY="${SERVICE_KEY_VALUE}"
   generate_kong_config
 
   if [[ ! -f "${TARGET_DIR}/migrations/init/01_custom_schema.sql" ]]; then
@@ -358,7 +390,7 @@ SQLEOF
     local current_admin_password="$1"
     docker exec -e "PGPASSWORD=${current_admin_password}" "${CONTAINER_NAME}" \
       psql -w -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
-      -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_storage_admin') THEN CREATE ROLE supabase_storage_admin WITH LOGIN NOINHERIT CREATEROLE; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN CREATE ROLE service_role NOLOGIN NOINHERIT BYPASSRLS; END IF; END \$\$; ALTER ROLE postgres WITH PASSWORD '${ADMIN_PASSWORD_VALUE}'; ALTER ROLE supabase_admin WITH PASSWORD '${ADMIN_PASSWORD_VALUE}'; ALTER ROLE supabase_storage_admin WITH PASSWORD '${ADMIN_PASSWORD_VALUE}'; ALTER ROLE service_role WITH BYPASSRLS; GRANT CREATE ON DATABASE postgres TO supabase_storage_admin; DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'storage') THEN CREATE SCHEMA storage AUTHORIZATION supabase_admin; END IF; GRANT ALL ON SCHEMA storage TO supabase_storage_admin WITH GRANT OPTION; GRANT USAGE ON SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA storage TO postgres, anon, authenticated, service_role; END \$\$; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role;" >/dev/null
+      -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN CREATE ROLE anon NOLOGIN; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN CREATE ROLE authenticated NOLOGIN; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_storage_admin') THEN CREATE ROLE supabase_storage_admin WITH LOGIN NOINHERIT CREATEROLE; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN CREATE ROLE service_role NOLOGIN NOINHERIT BYPASSRLS; END IF; END \$\$; ALTER ROLE postgres WITH PASSWORD '${ADMIN_PASSWORD_VALUE}'; ALTER ROLE supabase_admin WITH PASSWORD '${ADMIN_PASSWORD_VALUE}'; ALTER ROLE supabase_storage_admin WITH PASSWORD '${ADMIN_PASSWORD_VALUE}'; ALTER ROLE service_role WITH BYPASSRLS; GRANT anon, authenticated, service_role TO supabase_storage_admin; GRANT CREATE ON DATABASE postgres TO supabase_storage_admin; DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'storage') THEN CREATE SCHEMA storage AUTHORIZATION supabase_admin; END IF; GRANT ALL ON SCHEMA storage TO supabase_storage_admin WITH GRANT OPTION; GRANT USAGE ON SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA storage TO postgres, anon, authenticated, service_role; END \$\$; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role;" >/dev/null
   }
   sync_database_password_with_local_recovery() {
     docker exec -i -u postgres -e "NEW_ADMIN_PASSWORD=${ADMIN_PASSWORD_VALUE}" "${CONTAINER_NAME}" sh -s <<'RECOVERY_EOF'
@@ -387,7 +419,7 @@ cat "${TEMP_HBA}" > "${HBA_FILE}"
 rm -f "${TEMP_HBA}"
 pg_ctl -D "${PGDATA}" reload >/dev/null
 psql -w -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
-  -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_storage_admin') THEN CREATE ROLE supabase_storage_admin WITH LOGIN NOINHERIT CREATEROLE; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN CREATE ROLE service_role NOLOGIN NOINHERIT BYPASSRLS; END IF; END \$\$; ALTER ROLE postgres WITH PASSWORD '${NEW_ADMIN_PASSWORD}'; ALTER ROLE supabase_admin WITH PASSWORD '${NEW_ADMIN_PASSWORD}'; ALTER ROLE supabase_storage_admin WITH PASSWORD '${NEW_ADMIN_PASSWORD}'; ALTER ROLE service_role WITH BYPASSRLS; GRANT CREATE ON DATABASE postgres TO supabase_storage_admin; DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'storage') THEN CREATE SCHEMA storage AUTHORIZATION supabase_admin; END IF; GRANT ALL ON SCHEMA storage TO supabase_storage_admin WITH GRANT OPTION; GRANT USAGE ON SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA storage TO postgres, anon, authenticated, service_role; END \$\$; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role;" >/dev/null
+  -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN CREATE ROLE anon NOLOGIN; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN CREATE ROLE authenticated NOLOGIN; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_storage_admin') THEN CREATE ROLE supabase_storage_admin WITH LOGIN NOINHERIT CREATEROLE; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN CREATE ROLE service_role NOLOGIN NOINHERIT BYPASSRLS; END IF; END \$\$; ALTER ROLE postgres WITH PASSWORD '${NEW_ADMIN_PASSWORD}'; ALTER ROLE supabase_admin WITH PASSWORD '${NEW_ADMIN_PASSWORD}'; ALTER ROLE supabase_storage_admin WITH PASSWORD '${NEW_ADMIN_PASSWORD}'; ALTER ROLE service_role WITH BYPASSRLS; GRANT anon, authenticated, service_role TO supabase_storage_admin; GRANT CREATE ON DATABASE postgres TO supabase_storage_admin; DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'storage') THEN CREATE SCHEMA storage AUTHORIZATION supabase_admin; END IF; GRANT ALL ON SCHEMA storage TO supabase_storage_admin WITH GRANT OPTION; GRANT USAGE ON SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA storage TO postgres, anon, authenticated, service_role; END \$\$; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role;" >/dev/null
 RECOVERY_EOF
   }
   if ! sync_database_password "${ADMIN_PASSWORD_VALUE}"; then
