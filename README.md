@@ -24,6 +24,28 @@ npm install -g supabase-setup-cli
 Run the CLI from any directory:
 
 ```sh
+supabase-setup-cli --version   # Show the installed version
+supabase-setup-cli --help      # Show available commands
+```
+
+Version shortcuts `-v` and `version` are also supported. Help is available with `-h`, `-help`, or `help`.
+
+### Project commands
+
+Run these from the project directory, or from its parent directory with the project name:
+
+```sh
+supabase-setup-cli up [project-name]       # Start services (also: start)
+supabase-setup-cli status [project-name]   # Show container status (also: ps)
+supabase-setup-cli logs [project-name]     # Follow service logs
+supabase-setup-cli restart [project-name]  # Restart services
+supabase-setup-cli down [project-name]     # Stop containers and keep project data (also: stop)
+supabase-setup-cli purge [project-name]    # Delete containers and data volumes permanently
+```
+
+`down` preserves database and storage volumes. Use `purge` only when you intend to permanently delete their data.
+
+```sh
 supabase-setup-cli init name=<project_name> port=<postgres_port> storage-port=<storage_port> [kong-port=<kong_port>] [no-start]
 ```
 
@@ -52,7 +74,7 @@ supabase-setup-cli init name=myapp port=5432 storage-port=5000 kong-port=5555 no
 The CLI will create a `<name>_supabase` directory containing:
 
 - `docker-compose.yml` — Compose config (DB, Storage, Kong)
-- `.env` — Dynamically generated credentials and JWTs
+- `.env` — Project JWTs and API keys plus the fixed PostgreSQL password
 - `kong/` — Declarative Kong config
 - `migrations/init/` — Place your migration SQL files here
   - `01_custom_schema.sql` — Example schema file
@@ -65,6 +87,8 @@ The CLI will create a `<name>_supabase` directory containing:
 - **Storage API (via Kong):** `http://localhost:<kong-port>/storage/v1`
 - **SERVICE_KEY:** Displayed at the end of the script and saved in `.env`
 - **JWT Secrets:** `PGRST_JWT_SECRET`, `ANON_KEY`, and `SERVICE_KEY` are generated per project and stored in `.env`.
+- PostgreSQL uses the fixed `ADMIN_PASSWORD` value `SupabaseLocal2026`; re-running `init` synchronizes the database role to this value before starting Storage.
+- Re-running `init` preserves each project's `PGRST_JWT_SECRET` and `ANON_KEY`, and rotates `SERVICE_KEY`. Update any client using the previous service key after re-initialization.
 
 ## Service Management
 
@@ -85,12 +109,13 @@ You can also use CLI shortcuts:
 
 ```sh
 # From within the project directory:
-supabase-setup-cli down        # Stop and remove all project containers
+supabase-setup-cli down        # Stop containers and preserve project data
 supabase-setup-cli logs        # Stream real-time container logs
 
 # From anywhere, target a specific project by name:
-supabase-setup-cli down myapp  # Stop and remove containers for "myapp"
+supabase-setup-cli down myapp  # Stop containers for "myapp", preserving data
 supabase-setup-cli logs myapp  # Stream logs for "myapp"
+supabase-setup-cli purge myapp # Permanently delete "myapp" containers and data volumes
 ```
 
 # End of Selection

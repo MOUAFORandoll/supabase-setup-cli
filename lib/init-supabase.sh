@@ -10,7 +10,7 @@ usage() {
   echo "  init                   Initialize a new Supabase project in the current directory"
   echo ""
   echo "Options:"
-  echo "  name=<name>            Project name (creates a directory with this name and initializes files inside)"
+  echo "  name=<name>            Project name (creates a <name>_supabase directory)"
   echo "  port=<port>            Exposed port for PostgreSQL (e.g., 5432)"
   echo "  storage-port=<port>    Exposed port for the Storage API (e.g., 5000)"
   echo "  kong-port=<port>       Exposed port for Kong (e.g., 3030, default)"
@@ -137,54 +137,45 @@ if [[ "$SUBCOMMAND" == "init" ]]; then
   PGRST_JWT_SECRET_VALUE=""
   ANON_KEY_VALUE=""
   SERVICE_KEY_VALUE=""
-  ADMIN_PASSWORD_VALUE=""
+  ADMIN_PASSWORD_VALUE="SupabaseLocal2026"
 
   generate_jwt_env() {
-    # Keep credentials stable across repeated init runs. PostgreSQL only applies
-    # POSTGRES_PASSWORD when its data directory is first initialized.
+    # Keep the project's signing secret and anon key stable. The service key
+    # is intentionally rotated on each init; the database password is fixed.
     if [[ -f "${ENV_FILE}" ]]; then
       PGRST_JWT_SECRET_VALUE="$(sed -n 's/^PGRST_JWT_SECRET=//p' "${ENV_FILE}" | head -n 1)"
       ANON_KEY_VALUE="$(sed -n 's/^ANON_KEY=//p' "${ENV_FILE}" | head -n 1)"
-      SERVICE_KEY_VALUE="$(sed -n 's/^SERVICE_KEY=//p' "${ENV_FILE}" | head -n 1)"
-      ADMIN_PASSWORD_VALUE="$(sed -n 's/^ADMIN_PASSWORD=//p' "${ENV_FILE}" | head -n 1)"
-      if [[ -n "$PGRST_JWT_SECRET_VALUE" && -n "$ANON_KEY_VALUE" && -n "$SERVICE_KEY_VALUE" && -n "$ADMIN_PASSWORD_VALUE" ]]; then
-        echo "Existing secrets retained from: ${ENV_FILE}"
-        return
-      fi
-      echo "Warning: incomplete .env detected; generating new secrets. Existing database volumes may need a password reset."
     fi
 
-    local secret
-    secret=$(openssl rand -base64 48 | tr -d '\n')
     local exp="2147483646"
-    local anon_payload="{\"iss\":\"supabase\",\"role\":\"anon\",\"exp\":${exp}}"
-    local service_payload="{\"iss\":\"supabase\",\"role\":\"service_role\",\"exp\":${exp}}"
-    local anon_key service_key
-    anon_key=$(jwt_sign "$anon_payload" "$secret")
-    service_key=$(jwt_sign "$service_payload" "$secret")
+    if [[ -z "${PGRST_JWT_SECRET_VALUE}" || -z "${ANON_KEY_VALUE}" ]]; then
+      PGRST_JWT_SECRET_VALUE="$(openssl rand -base64 48 | tr -d '\n')"
+      local anon_payload="{\"iss\":\"supabase\",\"role\":\"anon\",\"exp\":${exp}}"
+      ANON_KEY_VALUE="$(jwt_sign "$anon_payload" "$PGRST_JWT_SECRET_VALUE")"
+    fi
 
-    local admin_pwd
-    admin_pwd=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 24)
-
-    PGRST_JWT_SECRET_VALUE="$secret"
-    ANON_KEY_VALUE="$anon_key"
-    SERVICE_KEY_VALUE="$service_key"
-    ADMIN_PASSWORD_VALUE="$admin_pwd"
+    local service_jti service_payload
+    service_jti="$(openssl rand -hex 16)"
+    service_payload="{\"iss\":\"supabase\",\"role\":\"service_role\",\"exp\":${exp},\"jti\":\"${service_jti}\"}"
+    SERVICE_KEY_VALUE="$(jwt_sign "$service_payload" "$PGRST_JWT_SECRET_VALUE")"
 
     cat > "${ENV_FILE}" <<ENVEOF
-PGRST_JWT_SECRET=${secret}
-ANON_KEY=${anon_key}
-SERVICE_KEY=${service_key}
-ADMIN_PASSWORD=${admin_pwd}
+PGRST_JWT_SECRET=${PGRST_JWT_SECRET_VALUE}
+ANON_KEY=${ANON_KEY_VALUE}
+SERVICE_KEY=${SERVICE_KEY_VALUE}
+ADMIN_PASSWORD=${ADMIN_PASSWORD_VALUE}
 ENVEOF
+    chmod 600 "${ENV_FILE}"
     echo "Secrets generated and written to: ${ENV_FILE}"
   }
 
-  if [[ -f "${COMPOSE_FILE}" ]]; then
-    docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-    docker rm -f "${STORAGE_CONTAINER}" >/dev/null 2>&1 || true
-    docker rm -f "${KONG_CONTAINER}" >/dev/null 2>&1 || true
-  fi
+  # Container names are stable across the legacy `<name>` and current
+  # `<name>_supabase` project directories. Replace stale containers every
+  # time while leaving named volumes intact, so migrations can repair an
+  # existing database even when the Compose file moved.
+  docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+  docker rm -f "${STORAGE_CONTAINER}" >/dev/null 2>&1 || true
+  docker rm -f "${KONG_CONTAINER}" >/dev/null 2>&1 || true
   rm -f "${COMPOSE_FILE}"
 
   generate_kong_config() {
@@ -270,6 +261,10 @@ EOF
   mkdir -p "${TARGET_DIR}/migrations/init"
 
   generate_jwt_env
+  # Docker Compose gives exported shell variables precedence over .env. Set
+  # this explicitly so every interpolated password comes from our validated
+  # project credential, even if the invoking shell had a stale value.
+  export ADMIN_PASSWORD="${ADMIN_PASSWORD_VALUE}"
   generate_kong_config
 
   if [[ ! -f "${TARGET_DIR}/migrations/init/01_custom_schema.sql" ]]; then
@@ -300,12 +295,33 @@ SQLEOF
   fi
 
   echo "Waiting for PostgreSQL to be ready..."
+  POSTGRES_READY=false
   for i in {1..30}; do
     if docker exec "${CONTAINER_NAME}" pg_isready -U postgres -q 2>/dev/null; then
+      POSTGRES_READY=true
       break
     fi
     sleep 1
   done
+
+  if [[ "${POSTGRES_READY}" != true ]]; then
+    echo "Error: PostgreSQL did not become ready. Check its logs with: docker logs ${CONTAINER_NAME}"
+    exit 1
+  fi
+
+  # POSTGRES_PASSWORD is only applied when PostgreSQL initializes an empty
+  # data directory. Reconcile the role password on every init so Storage's
+  # DATABASE_URL also works with databases created by older CLI versions.
+  if ! [[ "${ADMIN_PASSWORD_VALUE}" =~ ^[a-zA-Z0-9]+$ ]]; then
+    echo "Error: ADMIN_PASSWORD in ${ENV_FILE} contains unsupported characters. Use a newly generated alphanumeric password."
+    exit 1
+  fi
+  echo "Synchronizing PostgreSQL password with ${ENV_FILE}..."
+  if ! docker exec "${CONTAINER_NAME}" psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
+    -c "ALTER ROLE postgres WITH PASSWORD '${ADMIN_PASSWORD_VALUE}';" >/dev/null; then
+    echo "Error: Could not synchronize the PostgreSQL password. Check local PostgreSQL access inside the container."
+    exit 1
+  fi
 
   if [[ -d "${TARGET_DIR}/migrations/init" ]]; then
     for f in "${TARGET_DIR}"/migrations/init/*.sql; do

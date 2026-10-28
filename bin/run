@@ -13,57 +13,145 @@ SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/../lib"
 TARGET_DIR="$(pwd)"
 
+show_help() {
+  cat <<'HELP'
+Usage: supabase-setup-cli <command> [options]
+
+Commands:
+  init name=<name> port=<port> storage-port=<port> [kong-port=<port>] [no-start]
+      Generate a project and start its Supabase services.
+  up|start [project-name]
+      Start services in the current project or the named project.
+  down|stop [project-name]
+      Stop and remove project containers while preserving data volumes.
+  restart [project-name]
+      Restart project services.
+  status|ps [project-name]
+      Show project container status.
+  logs [project-name]
+      Follow project logs.
+  purge [project-name]
+      Remove containers and data volumes (permanently deletes database/storage data).
+  --version|-v|version
+      Show the installed version.
+  --help|-h|-help|help
+      Show this help.
+HELP
+}
+
+compose_command() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    docker-compose "$@"
+  else
+    echo "Error: Docker Compose is not installed or unavailable." >&2
+    return 1
+  fi
+}
+
+project_from_current_dir() {
+  local dir_name
+  dir_name="$(basename "${TARGET_DIR}")"
+  dir_name="${dir_name%_supabase}"
+  printf '%s' "${dir_name}"
+}
+
+resolve_compose_file() {
+  local requested_project="$1"
+  local current_project candidate label_path
+
+  current_project="$(project_from_current_dir)"
+  if [[ -f "${TARGET_DIR}/docker-compose.yml" ]] && \
+    { [[ -z "${requested_project}" ]] || [[ "${requested_project}" == "${current_project}" ]]; }; then
+    printf '%s' "${TARGET_DIR}/docker-compose.yml"
+    return 0
+  fi
+
+  if [[ -n "${requested_project}" ]]; then
+    for candidate in \
+      "${TARGET_DIR}/${requested_project}_supabase/docker-compose.yml" \
+      "${TARGET_DIR}/${requested_project}/docker-compose.yml"; do
+      if [[ -f "${candidate}" ]]; then
+        printf '%s' "${candidate}"
+        return 0
+      fi
+    done
+
+    # Compose records the source file on created containers, so project
+    # commands can work from another directory while the container exists.
+    for candidate in "${requested_project}_supabase" "${requested_project}"; do
+      label_path="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project.config_files" }}' "${candidate}" 2>/dev/null || true)"
+      label_path="${label_path%%,*}"
+      if [[ -f "${label_path}" ]]; then
+        printf '%s' "${label_path}"
+        return 0
+      fi
+    done
+  fi
+
+  return 1
+}
+
+run_project_compose() {
+  local requested_project="$1"
+  shift
+  local project_name compose_file
+
+  if [[ -n "${requested_project}" ]]; then
+    project_name="${requested_project}"
+  else
+    project_name="$(project_from_current_dir)"
+  fi
+
+  if ! [[ "${project_name}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    echo "Error: Project name must contain only letters, numbers, dashes, and underscores." >&2
+    return 1
+  fi
+
+  if ! compose_file="$(resolve_compose_file "${requested_project}")"; then
+    echo "Error: Could not find docker-compose.yml for project '${project_name}'. Run this command inside its project directory or from the parent directory." >&2
+    return 1
+  fi
+
+  compose_command -p "${project_name}" -f "${compose_file}" "$@"
+}
+
 subcommand="${1:-}"
 shift || true
 
 case "$subcommand" in
+  -v|--version|version)
+    node -e 'process.stdout.write(require(process.argv[1]).version + "\n")' "${SCRIPT_DIR}/../package.json"
+    ;;
   init)
     exec bash "${LIB_DIR}/init-supabase.sh" init "$@"
     ;;
-  down)
-    PROJECT_NAME="${1:-}"
-    if [[ -n "$PROJECT_NAME" ]]; then
-      echo "Arrêt et nettoyage des conteneurs pour le projet : ${PROJECT_NAME}..."
-      docker compose -p "${PROJECT_NAME}" down --volumes --remove-orphans 2>/dev/null || \
-      docker-compose -p "${PROJECT_NAME}" down --volumes --remove-orphans 2>/dev/null || true
-    elif [[ -f "${TARGET_DIR}/docker-compose.yml" ]]; then
-      echo "Arrêt des services Supabase locaux dans le dossier courant..."
-      docker compose down --volumes --remove-orphans 2>/dev/null || \
-      docker-compose down --volumes --remove-orphans 2>/dev/null || true
-    else
-      echo "Erreur : Aucun fichier docker-compose.yml trouvé et aucun nom de projet spécifié."
-      exit 1
-    fi
+  up|start)
+    run_project_compose "${1:-}" up -d
+    ;;
+  down|stop)
+    run_project_compose "${1:-}" down --remove-orphans
+    ;;
+  purge)
+    run_project_compose "${1:-}" down --volumes --remove-orphans
+    ;;
+  restart)
+    run_project_compose "${1:-}" restart
+    ;;
+  status|ps)
+    run_project_compose "${1:-}" ps
     ;;
   logs)
-    PROJECT_NAME="${1:-}"
-    if [[ -n "$PROJECT_NAME" ]]; then
-      echo "Affichage des logs pour le projet : ${PROJECT_NAME}..."
-      docker compose -p "${PROJECT_NAME}" logs -f 2>/dev/null || \
-      docker-compose -p "${PROJECT_NAME}" logs -f 2>/dev/null || \
-      echo "Erreur : Impossible de récupérer les logs pour le projet ${PROJECT_NAME}."
-    elif [[ -f "${TARGET_DIR}/docker-compose.yml" ]]; then
-      echo "Affichage des logs du projet dans le dossier courant..."
-      docker compose logs -f 2>/dev/null || \
-      docker-compose logs -f
-    else
-      echo "Erreur : Aucun fichier docker-compose.yml trouvé dans ce dossier et aucun nom de projet spécifié."
-      echo "Usage: supabase-setup-cli logs [project-name]"
-      exit 1
-    fi
+    run_project_compose "${1:-}" logs --follow
     ;;
-  -h|--help|help)
-    echo "Usage: supabase-setup-cli <command> [options]"
-    echo ""
-    echo "Commands:"
-    echo "  init name=<name> port=<port> storage-port=<port>  Initialize a new Supabase project"
-    echo "  down [project-name]                               Stop local Supabase services & remove containers"
-    echo "  logs [project-name]                               View container logs in real time"
+  -h|-help|--help|help)
+    show_help
     exit 0
     ;;
   *)
     echo "Unknown or missing command: $subcommand"
-    echo "Usage: supabase-setup-cli init name=<name> port=<port> storage-port=<port>"
+    show_help
     exit 1
     ;;
 esac
