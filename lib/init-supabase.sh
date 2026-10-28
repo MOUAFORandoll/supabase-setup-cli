@@ -363,6 +363,29 @@ SQLEOF
     docker-compose -p "${NAME}" -f "${COMPOSE_FILE}" up -d --remove-orphans "${SERVICE_DB}"
   fi
 
+  # pg_isready may return success against the temporary PostgreSQL instance
+  # used by the upstream entrypoint while it runs /docker-entrypoint-initdb.d.
+  # Wait for its explicit completion marker before touching roles, or an init
+  # SQL script can race ALTER ROLE and return "tuple concurrently updated".
+  echo "Waiting for PostgreSQL initialization scripts to finish..."
+  POSTGRES_INIT_COMPLETE=false
+  for i in {1..120}; do
+    if docker logs "${CONTAINER_NAME}" 2>&1 | \
+      grep -Fq "PostgreSQL init process complete; ready for start up."; then
+      POSTGRES_INIT_COMPLETE=true
+      break
+    fi
+    if ! docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null | grep -qx true; then
+      break
+    fi
+    sleep 1
+  done
+
+  if [[ "${POSTGRES_INIT_COMPLETE}" != true ]]; then
+    echo "Error: PostgreSQL initialization did not finish. Check its logs with: docker logs ${CONTAINER_NAME}"
+    exit 1
+  fi
+
   echo "Waiting for PostgreSQL to be ready..."
   POSTGRES_READY=false
   for i in {1..30}; do
@@ -388,9 +411,30 @@ SQLEOF
   echo "Synchronizing PostgreSQL password with ${ENV_FILE}..."
   sync_database_password() {
     local current_admin_password="$1"
-    docker exec -e "PGPASSWORD=${current_admin_password}" "${CONTAINER_NAME}" \
-      psql -w -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
-      -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN CREATE ROLE anon NOLOGIN; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN CREATE ROLE authenticated NOLOGIN; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_storage_admin') THEN CREATE ROLE supabase_storage_admin WITH LOGIN NOINHERIT CREATEROLE; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN CREATE ROLE service_role NOLOGIN NOINHERIT BYPASSRLS; END IF; END \$\$; ALTER ROLE postgres WITH PASSWORD '${ADMIN_PASSWORD_VALUE}'; ALTER ROLE supabase_admin WITH PASSWORD '${ADMIN_PASSWORD_VALUE}'; ALTER ROLE supabase_storage_admin WITH PASSWORD '${ADMIN_PASSWORD_VALUE}'; ALTER ROLE service_role WITH BYPASSRLS; GRANT anon, authenticated, service_role TO supabase_storage_admin; GRANT CREATE ON DATABASE postgres TO supabase_storage_admin; DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'storage') THEN CREATE SCHEMA storage AUTHORIZATION supabase_admin; END IF; GRANT ALL ON SCHEMA storage TO supabase_storage_admin WITH GRANT OPTION; GRANT USAGE ON SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA storage TO postgres, anon, authenticated, service_role; END \$\$; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role;" >/dev/null
+    local attempt error_file
+    error_file="$(mktemp)"
+    for attempt in {1..10}; do
+      if docker exec -e "PGPASSWORD=${current_admin_password}" "${CONTAINER_NAME}" \
+        psql -w -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
+        -c "DO \$\$ BEGIN BEGIN CREATE ROLE anon NOLOGIN; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END; BEGIN CREATE ROLE authenticated NOLOGIN; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END; BEGIN CREATE ROLE supabase_storage_admin WITH LOGIN NOINHERIT CREATEROLE; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END; BEGIN CREATE ROLE service_role NOLOGIN NOINHERIT BYPASSRLS; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END; END \$\$; ALTER ROLE postgres WITH PASSWORD '${ADMIN_PASSWORD_VALUE}'; ALTER ROLE supabase_admin WITH PASSWORD '${ADMIN_PASSWORD_VALUE}'; ALTER ROLE supabase_storage_admin WITH PASSWORD '${ADMIN_PASSWORD_VALUE}'; ALTER ROLE service_role WITH BYPASSRLS; GRANT anon, authenticated, service_role TO supabase_storage_admin; GRANT CREATE ON DATABASE postgres TO supabase_storage_admin; DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'storage') THEN CREATE SCHEMA storage AUTHORIZATION supabase_admin; END IF; GRANT ALL ON SCHEMA storage TO supabase_storage_admin WITH GRANT OPTION; GRANT USAGE ON SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA storage TO postgres, anon, authenticated, service_role; END \$\$; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role;" > /dev/null 2>"${error_file}"; then
+        rm -f "${error_file}"
+        return 0
+      fi
+
+      if grep -Eq 'tuple concurrently updated|duplicate key value violates unique constraint|already exists' "${error_file}" && [[ "${attempt}" -lt 10 ]]; then
+        echo "PostgreSQL is still applying role migrations; retrying synchronization (${attempt}/10)..." >&2
+        sleep 2
+        continue
+      fi
+
+      cat "${error_file}" >&2
+      rm -f "${error_file}"
+      return 1
+    done
+
+    cat "${error_file}" >&2
+    rm -f "${error_file}"
+    return 1
   }
   sync_database_password_with_local_recovery() {
     docker exec -i -u postgres -e "NEW_ADMIN_PASSWORD=${ADMIN_PASSWORD_VALUE}" "${CONTAINER_NAME}" sh -s <<'RECOVERY_EOF'
@@ -419,7 +463,7 @@ cat "${TEMP_HBA}" > "${HBA_FILE}"
 rm -f "${TEMP_HBA}"
 pg_ctl -D "${PGDATA}" reload >/dev/null
 psql -w -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
-  -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN CREATE ROLE anon NOLOGIN; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN CREATE ROLE authenticated NOLOGIN; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_storage_admin') THEN CREATE ROLE supabase_storage_admin WITH LOGIN NOINHERIT CREATEROLE; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN CREATE ROLE service_role NOLOGIN NOINHERIT BYPASSRLS; END IF; END \$\$; ALTER ROLE postgres WITH PASSWORD '${NEW_ADMIN_PASSWORD}'; ALTER ROLE supabase_admin WITH PASSWORD '${NEW_ADMIN_PASSWORD}'; ALTER ROLE supabase_storage_admin WITH PASSWORD '${NEW_ADMIN_PASSWORD}'; ALTER ROLE service_role WITH BYPASSRLS; GRANT anon, authenticated, service_role TO supabase_storage_admin; GRANT CREATE ON DATABASE postgres TO supabase_storage_admin; DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'storage') THEN CREATE SCHEMA storage AUTHORIZATION supabase_admin; END IF; GRANT ALL ON SCHEMA storage TO supabase_storage_admin WITH GRANT OPTION; GRANT USAGE ON SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA storage TO postgres, anon, authenticated, service_role; END \$\$; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role;" >/dev/null
+  -c "DO \$\$ BEGIN BEGIN CREATE ROLE anon NOLOGIN; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END; BEGIN CREATE ROLE authenticated NOLOGIN; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END; BEGIN CREATE ROLE supabase_storage_admin WITH LOGIN NOINHERIT CREATEROLE; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END; BEGIN CREATE ROLE service_role NOLOGIN NOINHERIT BYPASSRLS; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END; END \$\$; ALTER ROLE postgres WITH PASSWORD '${NEW_ADMIN_PASSWORD}'; ALTER ROLE supabase_admin WITH PASSWORD '${NEW_ADMIN_PASSWORD}'; ALTER ROLE supabase_storage_admin WITH PASSWORD '${NEW_ADMIN_PASSWORD}'; ALTER ROLE service_role WITH BYPASSRLS; GRANT anon, authenticated, service_role TO supabase_storage_admin; GRANT CREATE ON DATABASE postgres TO supabase_storage_admin; DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'storage') THEN CREATE SCHEMA storage AUTHORIZATION supabase_admin; END IF; GRANT ALL ON SCHEMA storage TO supabase_storage_admin WITH GRANT OPTION; GRANT USAGE ON SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA storage TO postgres, anon, authenticated, service_role; GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA storage TO postgres, anon, authenticated, service_role; END \$\$; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role; ALTER DEFAULT PRIVILEGES FOR ROLE supabase_storage_admin IN SCHEMA storage GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role;" >/dev/null
 RECOVERY_EOF
   }
   if ! sync_database_password "${ADMIN_PASSWORD_VALUE}"; then
