@@ -31,7 +31,7 @@ supabase-setup-cli init name=<project_name> port=<postgres_port> storage-port=<s
 
 | Option         | Description                                                       | Example |
 | -------------- | ----------------------------------------------------------------- | ------- |
-| `name`         | Project name (creates a folder with all generated configs inside) | `myapp` |
+| `name`         | Project name (creates a `<name>_supabase` folder with all generated configs inside) | `myapp` |
 | `port`         | Exposed port for PostgreSQL                                       | `5432`  |
 | `storage-port` | Exposed port for the Storage API                                  | `5000`  |
 | `kong-port`    | (Optional) Exposed port for Kong (default: `3030`)                | `5555`  |
@@ -49,7 +49,7 @@ supabase-setup-cli init name=myapp port=5432 storage-port=5000 kong-port=5555 no
 
 ## Project Structure
 
-The CLI will create a `<name>` directory containing:
+The CLI will create a `<name>_supabase` directory containing:
 
 - `docker-compose.yml` — Compose config (DB, Storage, Kong)
 - `.env` — Dynamically generated credentials and JWTs

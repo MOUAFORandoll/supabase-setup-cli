@@ -103,7 +103,7 @@ if [[ "$SUBCOMMAND" == "init" ]]; then
     exit 1
   fi
 
-  PROJECT_DIR="${BASE_DIR}/${NAME}"
+  PROJECT_DIR="${BASE_DIR}/${NAME}_supabase"
   echo "Creating project directory: ${PROJECT_DIR}"
   mkdir -p "${PROJECT_DIR}"
   cd "${PROJECT_DIR}"
@@ -140,6 +140,20 @@ if [[ "$SUBCOMMAND" == "init" ]]; then
   ADMIN_PASSWORD_VALUE=""
 
   generate_jwt_env() {
+    # Keep credentials stable across repeated init runs. PostgreSQL only applies
+    # POSTGRES_PASSWORD when its data directory is first initialized.
+    if [[ -f "${ENV_FILE}" ]]; then
+      PGRST_JWT_SECRET_VALUE="$(sed -n 's/^PGRST_JWT_SECRET=//p' "${ENV_FILE}" | head -n 1)"
+      ANON_KEY_VALUE="$(sed -n 's/^ANON_KEY=//p' "${ENV_FILE}" | head -n 1)"
+      SERVICE_KEY_VALUE="$(sed -n 's/^SERVICE_KEY=//p' "${ENV_FILE}" | head -n 1)"
+      ADMIN_PASSWORD_VALUE="$(sed -n 's/^ADMIN_PASSWORD=//p' "${ENV_FILE}" | head -n 1)"
+      if [[ -n "$PGRST_JWT_SECRET_VALUE" && -n "$ANON_KEY_VALUE" && -n "$SERVICE_KEY_VALUE" && -n "$ADMIN_PASSWORD_VALUE" ]]; then
+        echo "Existing secrets retained from: ${ENV_FILE}"
+        return
+      fi
+      echo "Warning: incomplete .env detected; generating new secrets. Existing database volumes may need a password reset."
+    fi
+
     local secret
     secret=$(openssl rand -base64 48 | tr -d '\n')
     local exp="2147483646"
