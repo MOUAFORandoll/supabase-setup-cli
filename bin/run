@@ -19,7 +19,7 @@ Usage: supabase-setup-cli <command> [options]
 
 Commands:
   init name=<name> port=<port> storage-port=<port> [kong-port=<port>] [no-start]
-      Generate a project and start its Supabase services.
+      Reset project containers/data volumes, then generate and start Supabase.
   up|start [project-name]
       Start services in the current project or the named project.
   down|stop [project-name]

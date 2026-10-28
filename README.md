@@ -45,6 +45,8 @@ supabase-setup-cli purge [project-name]    # Delete containers and data volumes 
 
 `down` preserves database and storage volumes. Use `purge` only when you intend to permanently delete their data.
 
+`init` removes this project's previous Docker containers and database/storage volumes before starting a clean stack. Existing database and uploaded storage data for that project will be permanently deleted each time `init` runs.
+
 ```sh
 supabase-setup-cli init name=<project_name> port=<postgres_port> storage-port=<storage_port> [kong-port=<kong_port>] [no-start]
 ```
@@ -87,7 +89,7 @@ The CLI will create a `<name>_supabase` directory containing:
 - **Storage API (via Kong):** `http://localhost:<kong-port>/storage/v1`
 - **SERVICE_KEY:** Displayed at the end of the script and saved in `.env`
 - **JWT Secrets:** `PGRST_JWT_SECRET`, `ANON_KEY`, and `SERVICE_KEY` are generated per project and stored in `.env`.
-- PostgreSQL uses the fixed `ADMIN_PASSWORD` value `SupabaseLocal2026`; re-running `init` synchronizes the database role to this value before starting Storage.
+- PostgreSQL and Storage use the fixed `ADMIN_PASSWORD` value `SupabaseLocal2026` on each fresh initialization. Storage connects as `supabase_storage_admin`, which has the schema privileges required by its migrations.
 - Re-running `init` preserves each project's `PGRST_JWT_SECRET` and `ANON_KEY`, and rotates `SERVICE_KEY`. Update any client using the previous service key after re-initialization.
 
 ## Service Management
